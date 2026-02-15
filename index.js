@@ -1,0 +1,402 @@
+require('dotenv').config();
+const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, ChannelType, Events } = require('discord.js');
+const fs = require('fs');
+const { executarBan, executarUnban, loadBans, listarPunidos } = require('./bans.js');
+const { enviarRegras } = require('./regra.js'); // Importação das regras
+const { executarTrocaTime } = require('./trocartime.js');
+const { executarCastigo } = require('./castigo.js');
+
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages
+    ]
+});
+
+const DB_PATH = './database.json';
+function loadDB() {
+    if (!fs.existsSync(DB_PATH)) {
+        const schema = { users: {}, matches: [], lastMatchId: 0 };
+        fs.writeFileSync(DB_PATH, JSON.stringify(schema, null, 4));
+        return schema;
+    }
+    return JSON.parse(fs.readFileSync(DB_PATH));
+}
+function saveDB(data) { fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 4)); }
+
+const IMAGES = {
+    INICIO: "https://cdn.discordapp.com/attachments/1306345894085525545/1451243127410262148/AR2.png",
+    FIM: "https://cdn.discordapp.com/attachments/1306345894085525545/1451243214093815808/AR2_1.png",
+    CANCELADO: "https://cdn.discordapp.com/attachments/1306345894085525545/1451460518588973108/AR2_2.png",
+    TROCA: "https://cdn.discordapp.com/attachments/1306345894085525545/1451461658428833836/AR2_4.png",
+    ANULADO: "https://cdn.discordapp.com/attachments/1306345894085525545/1451460703172165723/AR2_3.png"
+};
+
+// --- NOVO SISTEMA DE CÁLCULO ATUALIZADO ---
+function calculatePoints(currentTrophies, win) {
+    const trophies = currentTrophies || 0;
+
+    if (win) {
+        // Ganha menos quanto mais troféus tiver (Mínimo 10)
+        let gain = 30 - Math.floor(trophies / 60); 
+        return Math.max(10, gain); 
+    } else {
+        // Perde mais quanto mais troféus tiver (Máximo 60)
+        let loss = 15 + Math.floor(trophies / 35); 
+        return Math.min(60, loss);
+    }
+}
+
+async function updateNick(guild, userId, trophies) {
+    try {
+        const member = await guild.members.fetch(userId).catch(() => null);
+        if (member && member.manageable) {
+            const cleanName = (member.nickname || member.user.username).split('|')[0].trim();
+            await member.setNickname(`${cleanName} | ${trophies} 🏆`);
+        }
+    } catch (e) { }
+}
+
+client.once(Events.ClientReady, async () => {
+    console.log(`🚀 Sistema AR2 Online: ${client.user.tag}`);
+    
+    const commands = [
+        new SlashCommandBuilder().setName('jogo').setDescription('Inicia uma partida ranqueada')
+            .addStringOption(o => o.setName('formato').setDescription('Tamanho dos times').setRequired(true).addChoices({name:'1v1',value:'1v1'},{name:'2v2',value:'2v2'},{name:'3v3',value:'3v3'},{name:'4v4',value:'4v4'},{name:'5v5',value:'5v5'}))
+            .addStringOption(o => o.setName('link').setDescription('Link privado da sala').setRequired(true))
+            .addBooleanOption(o => o.setName('participar').setDescription('O Hoster irá jogar?').setRequired(true)),
+        
+        new SlashCommandBuilder().setName('finalizar').setDescription('Define o vencedor e computa os pontos')
+            .addIntegerOption(o => o.setName('id').setDescription('ID da partida').setRequired(true))
+            .addStringOption(o => o.setName('vencedor').setDescription('Time campeão').setRequired(true).addChoices({name:'Time Azul 🔵',value:'blue'},{name:'Time Vermelho 🔴',value:'red'})),
+        
+        new SlashCommandBuilder().setName('anular').setDescription('Cancela pontos de uma partida já finalizada')
+            .addIntegerOption(o => o.setName('id').setDescription('ID da partida').setRequired(true)),
+
+new SlashCommandBuilder().setName('castigo').setDescription('Coloca um jogador em timeout')
+    .addUserOption(o => o.setName('jogador').setDescription('Alvo do castigo').setRequired(true))
+    .addIntegerOption(o => o.setName('tempo').setDescription('Tempo em minutos').setRequired(true))
+    .addStringOption(o => o.setName('motivo').setDescription('Motivo do castigo').setRequired(true)),
+
+        new SlashCommandBuilder().setName('regras').setDescription('Exibe as regras oficiais do sistema ranqueado'),
+
+        new SlashCommandBuilder().setName('unban').setDescription('Remove a punição de um jogador')
+            .addUserOption(o => o.setName('jogador').setDescription('Alvo do desban').setRequired(true)),
+
+        new SlashCommandBuilder().setName('punidos').setDescription('Lista todos os jogadores banidos das ranqueadas'),
+        
+        new SlashCommandBuilder().setName('cancelar').setDescription('Cancela uma partida em andamento')
+            .addIntegerOption(o => o.setName('id').setDescription('ID da partida').setRequired(true)),
+        
+        new SlashCommandBuilder().setName('leaderboard').setDescription('Mostra o Top 10 da temporada'),
+        
+        new SlashCommandBuilder().setName('stats').setDescription('Ver o perfil de troféus')
+            .addUserOption(o => o.setName('jogador').setDescription('Selecione o jogador').setRequired(true)),
+
+        new SlashCommandBuilder().setName('ban').setDescription('Bane o jogador das ranqueadas')
+            .addUserOption(o => o.setName('jogador').setDescription('Alvo').setRequired(true))
+            .addStringOption(o => o.setName('motivo').setDescription('Motivo').setRequired(true)),
+
+       new SlashCommandBuilder().setName('trocatime').setDescription('Inverte dois jogadores de time (Azul <-> Vermelho)')
+            .addUserOption(o => o.setName('azul').setDescription('Jogador que está no AZUL').setRequired(true))
+            .addUserOption(o => o.setName('vermelho').setDescription('Jogador que está no VERMELHO').setRequired(true))
+            .addIntegerOption(o => o.setName('id').setDescription('ID da partida').setRequired(true)),
+        
+        new SlashCommandBuilder().setName('trocar').setDescription('Substitui jogadores em jogo')
+            .addUserOption(o => o.setName('saindo').setDescription('Jogador que sairá').setRequired(true))
+            .addUserOption(o => o.setName('entrando').setDescription('Jogador que entrará').setRequired(true))
+    ];
+
+    try {
+        const guild = client.guilds.cache.get('1305832132328947743');
+        if (guild) {
+            await guild.commands.set(commands);
+            console.log(`✅ Comandos registrados na Guild: ${guild.name}`);
+        }
+    } catch (error) {
+        console.error("❌ Erro ao registrar comandos na Guild:", error);
+    }
+});
+
+client.on(Events.InteractionCreate, async i => {
+    if (!i.isChatInputCommand()) return;
+    const db = loadDB();
+    const listBans = loadBans();
+    const isMestre = i.member.roles.cache.has(process.env.CARGO_MESTRE_HOSTER?.trim());
+    const isHost = i.member.roles.cache.has(process.env.CARGO_HOSTER?.trim()) || isMestre;
+
+    if (i.commandName === 'ban') {
+        if (!isMestre) return i.reply("❌ Apenas mestres podem banir.");
+        return executarBan(i);
+    }
+
+    if (i.commandName === 'punidos') {
+        if (!isMestre) {
+            return i.reply({ content: "❌ Apenas **Mestres** podem ver a lista de punidos.", flags: [64] });
+        }
+        return listarPunidos(i);
+    }
+
+    if (i.commandName === 'unban') {
+        if (!isMestre) return i.reply({ content: "❌ Apenas mestres podem desbanir.", flags: [64] });
+        return executarUnban(i);
+    }
+
+if (i.commandName === 'castigo') {
+    if (!isMestre) return i.reply({ content: "❌ Apenas mestres podem aplicar castigos.", ephemeral: true });
+    return executarCastigo(i);
+}
+
+    // Lógica do comando de regras
+    if (i.commandName === 'regras') {
+        return enviarRegras(i);
+    }
+
+    if (i.commandName === 'jogo') {
+        if (!isHost) return i.reply({ content: "❌ Sem permissão.", flags: [64] });
+        await i.deferReply();
+        const formatoStr = i.options.getString('formato');
+        const formatoNum = parseInt(formatoStr.split('v')[0]);
+        const link = i.options.getString('link');
+        const callPrincipal = i.guild.channels.cache.get(process.env.CALL_PRINCIPAL?.trim());
+
+        if (!callPrincipal) return i.editReply("❌ Call principal não encontrada.");
+        
+        let membros = Array.from(callPrincipal.members.values()).filter(m => !listBans[m.id]);
+        
+        if (!i.options.getBoolean('participar')) membros = membros.filter(m => m.id !== i.user.id);
+        if (membros.length < formatoNum * 2) return i.editReply(`❌ Jogadores insuficientes (Banidos ignorados).`);
+
+        const sorteados = membros.sort(() => 0.5 - Math.random()).slice(0, formatoNum * 2);
+        const tAzul = sorteados.slice(0, formatoNum);
+        const tVermelho = sorteados.slice(formatoNum);
+
+        const cAzul = await i.guild.channels.create({ 
+            name: `🔵 TIME AZUL`, 
+            type: ChannelType.GuildVoice, 
+            parent: process.env.CATEGORIA_CALLS?.trim(),
+            userLimit: formatoNum 
+        });
+        
+        const cVermelho = await i.guild.channels.create({ 
+            name: `🔴 TIME VERMELHO`, 
+            type: ChannelType.GuildVoice, 
+            parent: process.env.CATEGORIA_CALLS?.trim(),
+            userLimit: formatoNum 
+        });
+
+        for (const m of tAzul) await m.voice.setChannel(cAzul).catch(()=>{});
+        for (const m of tVermelho) await m.voice.setChannel(cVermelho).catch(()=>{});
+
+        db.lastMatchId++;
+        const match = { id: db.lastMatchId, host_id: i.user.id, blue: tAzul.map(m=>m.id), red: tVermelho.map(m=>m.id), callA: cAzul.id, callV: cVermelho.id, status: 'PROGRESS', format: formatoStr };
+        db.matches.push(match);
+        saveDB(db);
+
+        const pubEmbed = new EmbedBuilder()
+            .setAuthor({ name: `Hoster Responsável: ${i.user.username}`, iconURL: i.user.displayAvatarURL() })
+            .setTitle("⚔️ CONFRONTO INICIADO")
+            .setDescription(`A partida **#${match.id}** foi criada! Link na DM.`)
+            .setColor("#2B2D31")
+            .setImage(IMAGES.INICIO)
+            .addFields(
+                { name: '🟦 TIME AZUL', value: tAzul.join('\n') || 'Vazio', inline: true },
+                { name: '🟥 TIME VERMELHO', value: tVermelho.join('\n') || 'Vazio', inline: true },
+                { name: '📋 INFO', value: `\`\`\`ID: #${match.id}\nMODO: ${match.format}\nHOST: ${i.user.tag}\`\`\`` }
+            );
+
+        await i.editReply({ embeds: [pubEmbed] });
+
+        sorteados.forEach(m => {
+            const isBlue = tAzul.some(p => p.id === m.id);
+            const dmEmbed = new EmbedBuilder()
+                .setTitle(`🎮 Partida V-${match.id}`)
+                .setColor(isBlue ? "#3498db" : "#e74c3c")
+                .addFields(
+                    { name: "Formato", value: formatoStr, inline: true },
+                    { name: "Seu time", value: isBlue ? "🔵 Azul" : "🔴 Vermelho", inline: true },
+                    { name: "Link da partida", value: link, inline: false },
+                    { name: "Call", value: `\`AR2 Brasil [BR] › # ${isBlue ? "Azul" : "Vermelho"}\``, inline: false }
+                );
+            m.send({ embeds: [dmEmbed] }).catch(() => {});
+        });
+    }
+
+    else if (i.commandName === 'trocatime') {
+        if (!isMestre) return i.reply({ content: "❌ Apenas mestres podem usar este comando.", ephemeral: true });
+        return executarTrocaTime(i, db, saveDB);
+    }
+
+    else if (i.commandName === 'finalizar') {
+        const id = i.options.getInteger('id');
+        const winner = i.options.getString('vencedor');
+        const m = db.matches.find(x => x.id === id && x.status === 'PROGRESS');
+
+        if (!m) return i.reply("❌ Partida não encontrada.");
+        if (m.host_id !== i.user.id && !isMestre) return i.reply("❌ Sem permissão.");
+
+        const isBlueWin = winner === 'blue';
+        const winIds = isBlueWin ? m.blue : m.red;
+        const loseIds = isBlueWin ? m.red : m.blue;
+
+        let blueDetails = [];
+        let redDetails = [];
+        let pointRegistry = {};
+
+        for (const uid of winIds) {
+            if (!db.users[uid]) db.users[uid] = { trophies: 0, wins: 0, losses: 0, total: 0 };
+            if (db.users[uid].wins === undefined) db.users[uid].wins = 0;
+            if (db.users[uid].total === undefined) db.users[uid].total = 0;
+
+            const gain = calculatePoints(db.users[uid].trophies, true);
+            db.users[uid].trophies += gain;
+            db.users[uid].wins += 1;
+            db.users[uid].total += 1;
+            pointRegistry[uid] = gain;
+            updateNick(i.guild, uid, db.users[uid].trophies);
+            
+            const mention = `<@${uid}>`;
+            if (isBlueWin) blueDetails.push(`${mention} (+${gain})`);
+            else redDetails.push(`${mention} (+${gain})`);
+        }
+
+        for (const uid of loseIds) {
+            if (!db.users[uid]) db.users[uid] = { trophies: 0, wins: 0, losses: 0, total: 0 };
+            if (db.users[uid].losses === undefined) db.users[uid].losses = 0;
+            if (db.users[uid].total === undefined) db.users[uid].total = 0;
+
+            const loss = calculatePoints(db.users[uid].trophies, false);
+            db.users[uid].trophies = Math.max(0, db.users[uid].trophies - loss);
+            db.users[uid].losses += 1;
+            db.users[uid].total += 1;
+            pointRegistry[uid] = loss;
+            updateNick(i.guild, uid, db.users[uid].trophies);
+
+            const mention = `<@${uid}>`;
+            if (isBlueWin) redDetails.push(`${mention} (-${loss})`);
+            else blueDetails.push(`${mention} (-${loss})`);
+        }
+
+        [m.callA, m.callV].forEach(async cid => {
+            const ch = i.guild.channels.cache.get(cid);
+            if (ch) {
+                for (const mem of ch.members.values()) await mem.voice.setChannel(process.env.CALL_PRINCIPAL).catch(()=>{});
+                setTimeout(() => ch.delete().catch(()=>{}), 3000);
+            }
+        });
+
+        m.status = 'FINISHED'; m.winner = winner; m.registry = pointRegistry;
+        saveDB(db);
+
+        const endEmbed = new EmbedBuilder()
+            .setTitle(isBlueWin ? "🏆 VITÓRIA: TIME AZUL" : "🏆 VITÓRIA: TIME VERMELHO")
+            .setColor(isBlueWin ? "#3498db" : "#e74c3c")
+            .setImage(IMAGES.FIM)
+            .addFields(
+                { name: '🟦 TIME AZUL', value: blueDetails.join('\n') || 'Ninguém', inline: true },
+                { name: '🟥 TIME VERMELHO', value: redDetails.join('\n') || 'Ninguém', inline: true },
+                { name: '📋 INFO', value: `\`\`\`ID: #${m.id}\nMODO: ${m.format}\nHOST: ${i.user.tag}\`\`\`` }
+            );
+        i.reply({ embeds: [endEmbed] });
+    }
+
+    else if (i.commandName === 'anular') {
+        if (!isMestre) return i.reply("❌ Apenas mestres podem anular.");
+        const id = i.options.getInteger('id');
+        const m = db.matches.find(x => x.id === id && x.status === 'FINISHED');
+        if (!m) return i.reply("❌ Partida não encontrada.");
+
+        const isBlueWin = m.winner === 'blue';
+        const winIds = isBlueWin ? m.blue : m.red;
+        const loseIds = isBlueWin ? m.red : m.blue;
+
+        winIds.forEach(u => { 
+            if(db.users[u]) {
+                db.users[u].trophies = Math.max(0, db.users[u].trophies - (m.registry[u] || 0)); 
+                if(db.users[u].wins > 0) db.users[u].wins--; 
+                if(db.users[u].total > 0) db.users[u].total--;
+                updateNick(i.guild, u, db.users[u].trophies); 
+            }
+        });
+        loseIds.forEach(u => { 
+            if(db.users[u]) {
+                db.users[u].trophies += (m.registry[u] || 0); 
+                if(db.users[u].losses > 0) db.users[u].losses--; 
+                if(db.users[u].total > 0) db.users[u].total--;
+                updateNick(i.guild, u, db.users[u].trophies); 
+            }
+        });
+        
+        m.status = 'ANNULLED';
+        saveDB(db);
+        i.reply({ embeds: [new EmbedBuilder().setTitle("⚠️ PARTIDA ANULADA").setImage(IMAGES.ANULADO).setColor("#FF3E3E")] });
+    }
+
+    else if (i.commandName === 'leaderboard') {
+        const sorted = Object.entries(db.users).sort((a,b) => b[1].trophies - a[1].trophies).slice(0, 10);
+        const list = sorted.map(([id, d], index) => `**${index+1}º** <@${id}> — \`${d.trophies}\` 🏆`).join('\n');
+        
+        return i.reply({ 
+            embeds: [new EmbedBuilder().setTitle("🏆 RANKING TEMPORADA").setDescription(list || "Sem dados.").setColor("#F1C40F")],
+            ephemeral: true 
+        });
+    }
+
+    else if (i.commandName === 'stats') {
+        const target = i.options.getUser('jogador');
+        const data = db.users[target.id] || { trophies: 0, wins: 0, losses: 0, total: 0 };
+        const wins = data.wins || 0;
+        const losses = data.losses || 0;
+        const total = data.total || 0;
+        const trophies = data.trophies || 0;
+        const winrate = total > 0 ? ((wins / total) * 100).toFixed(1) : "0.0";
+
+        const statsEmbed = new EmbedBuilder()
+            .setTitle(`👤 Perfil de ${target.username}`)
+            .setThumbnail(target.displayAvatarURL())
+            .setColor("#3498DB")
+            .addFields(
+                { name: '🏆 Troféus', value: `\`${trophies}\``, inline: true },
+                { name: '🎮 Partidas', value: `\`${total}\``, inline: true },
+                { name: '\u200B', value: '\u200B', inline: true },
+                { name: '✅ Vitórias', value: `\`${wins}\``, inline: true },
+                { name: '❌ Derrotas', value: `\`${losses}\``, inline: true },
+                { name: '📊 Winrate', value: `\`${winrate}%\``, inline: true }
+            );
+
+        return i.reply({ 
+            embeds: [statsEmbed], 
+            ephemeral: true 
+        });
+    }
+
+    else if (i.commandName === 'cancelar') {
+        const id = i.options.getInteger('id');
+        const m = db.matches.find(x => x.id === id && x.status === 'PROGRESS');
+        if (!m) return i.reply("❌ Partida não encontrada.");
+        [m.callA, m.callV].forEach(async cid => {
+            const ch = i.guild.channels.cache.get(cid);
+            if (ch) {
+                for (const mem of ch.members.values()) await mem.voice.setChannel(process.env.CALL_PRINCIPAL).catch(()=>{});
+                setTimeout(() => ch.delete().catch(()=>{}), 2000);
+            }
+        });
+        m.status = 'CANCELLED'; saveDB(db);
+        i.reply({ embeds: [new EmbedBuilder().setTitle("🛑 PARTIDA CANCELADA").setImage(IMAGES.CANCELADO).setColor("#FF2A2A")] });
+    }
+
+    else if (i.commandName === 'trocar') {
+        if (!isHost) return i.reply("❌ Sem permissão.");
+        const sai = i.options.getMember('saindo');
+        const entra = i.options.getMember('entrando');
+        if (!sai || !sai.voice.channel) return i.reply("❌ Saindo não está em call.");
+        const canal = sai.voice.channel;
+        await sai.voice.setChannel(process.env.CALL_PRINCIPAL).catch(()=>{});
+        if (entra && entra.voice.channel) await entra.voice.setChannel(canal.id).catch(()=>{});
+        i.reply({ embeds: [new EmbedBuilder().setTitle("🔄 TROCA REALIZADA").setImage(IMAGES.TROCA).setColor("#E67E22").setDescription(`${sai} ➔ ${entra}`)] });
+    }
+});
+
+client.login(process.env.TOKEN);
