@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Inscrição - AR2 BRASIL</title>
+    <style>
+        :root { --primary: #769d5c; --bg: #0f0f0f; --card: #1a1a1a; --input: #222; --text: #f0f0f0; --accent: #4ecca3; }
+        body { font-family: 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); display: flex; flex-direction: column; align-items: center; padding: 40px 10px; margin:0; }
+        .container { background: var(--card); padding: 30px; border-radius: 15px; width: 100%; max-width: 750px; border: 1px solid #333; box-shadow: 0 20px 50px rgba(0,0,0,0.6); }
+        h2 { color: var(--primary); text-align: center; font-size: 2em; text-transform: uppercase; margin-bottom: 10px; border-bottom: 2px solid var(--primary); display: inline-block; width: 100%; padding-bottom: 10px; }
+        .vagas-badge { background: #222; padding: 8px 20px; border-radius: 50px; font-weight: bold; margin: 0 auto 30px; border: 1px solid var(--primary); color: var(--primary); width: fit-content; }
+        .section-title { background: #252525; padding: 8px 15px; border-radius: 5px; color: var(--accent); font-size: 0.9em; font-weight: bold; margin: 25px 0 15px; border-left: 4px solid var(--accent); }
+        .row { display: flex; gap: 15px; margin-bottom: 12px; flex-wrap: wrap; }
+        .col { flex: 1; min-width: 200px; }
+        label { display: block; margin-bottom: 5px; color: #aaa; font-size: 0.75em; text-transform: uppercase; }
+        input { width: 100%; padding: 12px; border-radius: 6px; border: 1px solid #333; background: var(--input); color: white; box-sizing: border-box; outline: none; transition: 0.3s; }
+        input:focus { border-color: var(--accent); background: #2a2a2a; }
+        button { width: 100%; padding: 18px; margin-top: 30px; border: none; border-radius: 8px; background: var(--primary); color: white; font-weight: bold; cursor: pointer; font-size: 1.1em; transition: 0.3s; box-shadow: 0 4px 15px rgba(118, 157, 92, 0.3); }
+        button:hover { background: #5a7a46; transform: translateY(-2px); }
+        .admin-panel { margin-top: 60px; background: #151515; padding: 25px; border-radius: 10px; border: 1px dashed #444; width: 100%; max-width: 750px; box-sizing: border-box; }
+        .btn-reset { background: #e63946; padding: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🏆 TORNEIO AR2</h2>
+    <div class="vagas-badge" id="vagas-display">CARREGANDO...</div>
+
+    <form id="formInscricao">
+        <div class="section-title">DADOS DO TIME</div>
+        <div class="row">
+            <div class="col">
+                <label>Nome do Time</label>
+                <input type="text" id="nomeTime" required>
+            </div>
+            <div class="col">
+                <label>Senha Secreta</label>
+                <input type="password" id="senhaTime" required>
+            </div>
+        </div>
+
+        <div class="section-title">LINE-UP PRINCIPAL</div>
+        <div id="players-grid"></div>
+
+        <div class="section-title">RESERVAS</div>
+        <div id="reservas-grid"></div>
+
+        <button type="submit" id="btnAcao">ENVIAR INSCRIÇÃO COMPLETA</button>
+    </form>
+    <div id="msg" style="text-align:center; margin-top:15px;"></div>
+</div>
+
+<div class="admin-panel">
+    <h3 style="color:#e63946">⚙️ ÁREA DO ORGANIZADOR</h3>
+    <input type="password" id="adminKey" placeholder="Senha Admin">
+    <div class="row" style="margin-top:10px">
+        <div class="col"><button onclick="mudarLimite()">ATUALIZAR VAGAS</button></div>
+        <div class="col"><button class="btn-reset" onclick="resetarTorneio()">RESETAR TORNEIO</button></div>
+    </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-database-compat.js"></script>
+
+<script>
+    const firebaseConfig = {
+        apiKey: "AIzaSyAVDxC9Yn8vd-4DPYp-isRbVR1DlJbaYIA",
+        authDomain: "torneio-ar2-8c3c4.firebaseapp.com",
+        databaseURL: "https://torneio-ar2-8c3c4-default-rtdb.firebaseio.com",
+        projectId: "torneio-ar2-8c3c4",
+        storageBucket: "torneio-ar2-8c3c4.firebasestorage.app",
+        messagingSenderId: "938294878295",
+        appId: "1:938294878295:web:a42575faeb296412ca0312"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const WEBHOOK_URL = "https://discord.com/api/webhooks/1500144220542075073/v5JJlOB-cMkRWV_HV34W64JM1S9c9dMtPH1UALCYAJGw4nbnDgVp5TgvwkztKkQvrkMD";
+    const MINHA_SENHA_ADMIN = "teozin";
+
+    // Gerar campos obrigatórios
+    const createFields = (id, label, container) => {
+        const html = `
+            <div class="row">
+                <div class="col"><label>${label} (Roblox)</label><input type="text" id="${id}_rb" required></div>
+                <div class="col"><label>${label} (Discord)</label><input type="text" id="${id}_dc" required></div>
+            </div>`;
+        document.getElementById(container).insertAdjacentHTML('beforeend', html);
+    };
+
+    ["Líder", "Jogador 2", "Jogador 3", "Jogador 4"].forEach((l, i) => createFields(`p${i+1}`, l, 'players-grid'));
+    ["Reserva 1", "Reserva 2", "Reserva 3", "Reserva 4"].forEach((l, i) => createFields(`r${i+1}`, l, 'reservas-grid'));
+
+    db.ref('/').on('value', (snap) => {
+        const d = snap.val() || {};
+        const t = d.times ? Object.keys(d.times).length : 0;
+        const l = (d.config && d.config.limite) ? d.config.limite : 8;
+        document.getElementById('vagas-display').innerText = `VAGAS: ${t} / ${l}`;
+    });
+
+    document.getElementById('formInscricao').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const nome = document.getElementById('nomeTime').value.trim();
+        const senha = document.getElementById('senhaTime').value;
+        const timeID = nome.toLowerCase().replace(/\s/g, '_');
+        const timeRef = db.ref('times/' + timeID);
+
+        const snap = await timeRef.once('value');
+        if (snap.exists() && snap.val().senha !== senha) return alert("Senha incorreta!");
+
+        const novosDados = {
+            nome: nome,
+            senha: senha,
+            p1_rb: document.getElementById('p1_rb').value, p1_dc: document.getElementById('p1_dc').value,
+            p2_rb: document.getElementById('p2_rb').value, p2_dc: document.getElementById('p2_dc').value,
+            p3_rb: document.getElementById('p3_rb').value, p3_dc: document.getElementById('p3_dc').value,
+            p4_rb: document.getElementById('p4_rb').value, p4_dc: document.getElementById('p4_dc').value,
+            r1_rb: document.getElementById('r1_rb').value, r1_dc: document.getElementById('r1_dc').value,
+            r2_rb: document.getElementById('r2_rb').value, r2_dc: document.getElementById('r2_dc').value,
+            r3_rb: document.getElementById('r3_rb').value, r3_dc: document.getElementById('r3_dc').value,
+            r4_rb: document.getElementById('r4_rb').value, r4_dc: document.getElementById('r4_dc').value
+        };
+
+        await timeRef.set(novosDados);
+        enviarDiscord(snap.exists() ? "📝 TIME EDITADO" : "🔥 NOVA INSCRIÇÃO", novosDados);
+        alert("Inscrição salva com sucesso!");
+    });
+
+    function enviarDiscord(titulo, d) {
+        const embed = {
+            title: titulo,
+            description: `**Time:** \`${d.nome}\``,
+            color: titulo.includes("NOVA") ? 7773532 : 16753920,
+            fields: [
+                { name: "👑 Líder", value: `**RB:** ${d.p1_rb}\n**DC:** ${d.p1_dc}`, inline: false },
+                { name: "👥 Line-up", value: `• ${d.p2_rb} (${d.p2_dc})\n• ${d.p3_rb} (${d.p3_dc})\n• ${d.p4_rb} (${d.p4_dc})`, inline: true },
+                { name: "🎒 Reservas", value: `• ${d.r1_rb} (${d.r1_dc})\n• ${d.r2_rb} (${d.r2_dc})\n• ${d.r3_rb} (${d.r3_dc})\n• ${d.r4_rb} (${d.r4_dc})`, inline: true }
+            ],
+            footer: { text: "Gerenciador de Torneios AR2" },
+            timestamp: new Date()
+        };
+        fetch(WEBHOOK_URL, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({embeds:[embed]}) });
+    }
+
+    function mudarLimite() {
+        if(document.getElementById('adminKey').value === MINHA_SENHA_ADMIN) {
+            const l = prompt("Novo limite de vagas:");
+            if(l) db.ref('config').update({ limite: parseInt(l) });
+        } else { alert("Senha Admin Incorreta!"); }
+    }
+
+    function resetarTorneio() {
+        if(document.getElementById('adminKey').value === MINHA_SENHA_ADMIN) {
+            if(confirm("Apagar todos os times?")) db.ref('times').remove();
+        } else { alert("Senha Admin Incorreta!"); }
+    }
+</script>
+</body>
+</html>
